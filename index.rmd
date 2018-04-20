@@ -1,0 +1,161 @@
+---
+title: "Machine Learning Project"
+author: "Cody Schulz"
+date: "April 16, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Using only gyroscopic data from wearable technology, can we determine whether a person is performing an exercise correctly? Using machine learning techniques, we conclude the answer is yes, with nearly 100% accuracy.
+
+The sections below outline the steps taken to build a model of exercise prediction. 
+
+## Initial steps
+
+We first open relevant packages, configure parallel processing, and create a function `col_types` for use later. For more information on configuring parallel processing, please see Len Greski's [RPubs article](https://rpubs.com/lgreski/improvingCaretPerformance).
+
+```{r initial_steps, eval = FALSE}
+### Remove scientific notation
+options(scipen=999)
+
+### Clear memory
+rm(list=ls())
+
+### Set working directory
+setwd("G:/My Documents/Other/data_sci/datasciencecoursera/course_8")
+# setwd("C:/Users/Cody/Google Drive/Data Science/datasciencecoursera/course_8")
+
+### Open packages
+libs <- c("readr", "dplyr", "AppliedPredictiveModeling", "caret", "ElemStatLearn",
+          "pgmm", "rpart", "randomForest", "party", "parallel", "doParallel")
+lapply(libs, require, character.only = TRUE)
+
+### Configure parallel processing
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+
+### Create the function col_types
+col_types <- function(x) {
+  table(unlist(lapply(x, class)))
+}
+```
+
+## Download data
+
+We then download the training and testing data from their cloudfront repositories. The data originally were produced by [Groupware-LES](http://groupware.les.inf.puc-rio.br/).
+
+```{r download, eval = FALSE}
+#### Training
+train_path <- "in/training.csv"
+train_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+if(!file.exists(train_path)) {
+  download.file(
+    train_url,
+    destfile = train_path
+  )
+}
+
+#### Final Testing
+final_test_path <- "in/testing.csv"
+final_test_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+if(!file.exists(final_test_path)) {
+  download.file(
+    final_test_url,
+    destfile = final_test_path
+  )
+}
+```
+
+## Open and clean data
+
+The data have several columns that aren't gyroscopic data or are only NA--we remove them. Rows containing NA values are also removed. The data are then manipulated such that they only contain factor and numeric data types. This allows the data to be read correctly by `caret::train()`.
+
+```{r open_clean, eval = FALSE}
+#### Final_test
+final_test <- read_csv(final_test_path) %>%
+  
+  ### Drop unnecessary variables
+  select(-c(X1, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, problem_id)) %>%
+  
+  ### Drop variables only equalling NA
+  select_if(~sum(!is.na(.)) != 0)
+
+### Drop variables with only one value (i.e. have no variance)
+final_test1 <- Filter(function(x)(length(unique(x))>1), final_test)
+
+### Collect testing columns (and add the outcome variable)
+final_test_cols <- c(colnames(final_test1), "classe")
+
+#### Training
+train <- suppressMessages(suppressWarnings(read_csv(
+  train_path,
+  na = c("NA", NA, "#DIV/0!", "")
+))) %>%
+  
+  #### Drop unnecessary variables
+  select(-c(X1, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp)) %>%
+  
+  #### Turn classe and new_window into a factor
+  mutate(
+    classe = as.factor(classe),
+    new_window = as.factor(new_window)
+  )
+
+#### Keep only variables present in the testing set (plus the outcome variable)
+train1 <- train[,colnames(train) %in% final_test_cols]
+
+#### Show a table of column types--confirm no character
+col_types(train1)
+if("character" %in% names(col_types(train1))) {
+  stop("Character columns present")
+}
+
+#### Look for missing values
+colnames(train1)[ apply(train1, 2, anyNA) ]
+
+#### Remove missing values
+train2 <- train1[complete.cases(train1), ]
+```
+
+## Model Building
+
+We build a random forest model due to its [excellent performance](https://www.coursera.org/learn/practical-machine-learning/lecture/XKsl6/random-forests). We use 5-fold cross validation with 2 repeats on the training set, a [common practice](https://www.coursera.org/learn/practical-machine-learning/lecture/HZKcr/cross-validation).
+
+```{r model, eval = FALSE}
+
+#### Define training control:
+### 5-fold cross validation with 2 repeats
+### Parallel processing
+train_control <- trainControl(method="repeatedcv", number = 5, repeats = 2, allowParallel = TRUE)
+
+#### Use a Random Forest Model
+
+### Train the data 
+set.seed(1235)
+modelFit_rf <- train(
+  classe ~ .,
+  method = "rf",
+  data = train2,
+  trControl = train_control
+)
+### Close cluster
+stopCluster(cluster)
+```
+
+## Model Results
+
+The cross-validated model accuracy is 99.71%, giving an expected out-of-sample error rate of 0.29%. We then use the model to form predictions for the testing dataset.
+
+```{r model2, eval = FALSE}
+### Look at final model
+modelFit_rf$finalModel
+
+
+### Predict on final_test_1
+final_predict <- predict(modelFit_rf, newdata = final_test1)
+```
